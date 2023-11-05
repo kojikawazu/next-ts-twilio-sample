@@ -1,118 +1,167 @@
-import Image from 'next/image'
-import { Inter } from 'next/font/google'
-
-const inter = Inter({ subsets: ['latin'] })
+import { useEffect, useState, useRef } from 'react';
+import { 
+  Room, 
+  Participant, 
+  VideoTrackPublication, 
+  LocalVideoTrack, 
+  AudioTrackPublication, 
+  AudioTrack, 
+  LocalAudioTrack 
+} from 'twilio-video';
 
 export default function Home() {
+  // Twilioのトークンを保持するためのstate
+  const [token, setToken] = useState<string | null>(null);
+
+  const [room, setRoom] = useState<Room | null>(null);
+  // ビデオが有効かどうかを示すstate
+  const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+  // マイクが有効かどうかを示すstate
+  const [isAudioEnabled, setIsAudioEnabled] = useState(true);
+  // ローカルのビデオを表示するためのDOMへの参照
+  const localVideoRef = useRef<HTMLDivElement>(null);
+  // リモートのビデオを表示するためのDOMへの参照
+  const remoteVideoRef = useRef<HTMLDivElement>(null);
+  //  ローカルのビデオトラックを保持するためのstate
+  const [localVideoTrack, setLocalVideoTrack] = useState<LocalVideoTrack | null>(null);
+  // 音量を保持するための新しい状態
+  const [volume, setVolume] = useState<number>(0);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+
+  useEffect(() => {
+    audioContextRef.current = new AudioContext();
+    analyserRef.current = audioContextRef.current.createAnalyser();
+  }, []);
+
+  // コンポーネントがマウントされたときにTwilioのトークンを非同期的に取得
+  useEffect(() => {
+    // トークンを取得する関数
+    const fetchToken = async () => {
+      const response = await fetch('/api/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identity: 'your-identity', roomName: 'your-room-name' }),
+      });
+      const data = await response.json();
+      setToken(data.token);
+    };
+
+    fetchToken();
+  }, []);
+
+  // トークンが取得されたら、Twilioに接続し、ローカルのビデオとリモートのビデオをそれぞれのdivにアタッチ
+  useEffect(() => {
+    if (token) {
+      // Twilioのビデオライブラリからconnect関数をインポート
+      const { connect } = require('twilio-video');
+  
+      // トークンを使用してTwilioのビデオルームに接続します。この接続は、ビデオとオーディオの両方を有効にしています。
+      connect(token, { video: true, audio: true }).then((room: Room) => {
+        setRoom(room);
+        
+        // Attach the local video
+        // ローカルのビデオトラックを取得し、それをlocalVideoRefにアタッチします。これにより、ユーザーのビデオが表示されます。
+        room.localParticipant.videoTracks.forEach((trackPublication: VideoTrackPublication) => {
+          const track = trackPublication.track;
+          if (track) {
+            console.log("debug2");
+            localVideoRef.current?.appendChild(track.attach());
+            setLocalVideoTrack(track as LocalVideoTrack);
+          }
+        });
+  
+        // Attach video tracks of all participants
+        // すでにルームにいるすべての参加者のビデオトラックを取得し、それをremoteVideoRefにアタッチします。これにより、他の参加者のビデオが表示されます。
+        room.participants.forEach((participant: Participant) => {
+          participant.videoTracks.forEach((trackPublication: VideoTrackPublication) => {
+            const track = trackPublication.track;
+            if (track) {
+              console.log("debug3");
+              remoteVideoRef.current?.appendChild(track.attach());
+            }
+          });
+        });
+  
+        // When a new participant joins, attach their video tracks
+        // 新しい参加者がルームに参加したときのイベントリスナーを設定します。
+        // 新しい参加者が参加すると、その参加者のビデオトラックを取得し、それをremoteVideoRefにアタッチします。
+        room.localParticipant.audioTracks.forEach((audioTrackPublication: AudioTrackPublication) => {
+          console.log("debug4");
+
+          const audioTrack = audioTrackPublication.track;
+          console.log(audioTrack);
+          if (audioTrack) {
+            console.log("debug4-1");
+
+            const source    = audioContextRef.current?.createMediaStreamSource(new MediaStream([audioTrack.mediaStreamTrack]));
+            const dataArray = new Uint8Array(analyserRef.current!.frequencyBinCount);
+            source?.connect(analyserRef.current!);
+            if (audioContextRef.current?.state === 'suspended') {
+              audioContextRef.current?.resume();
+              console.log(audioContextRef.current?.state);
+            }
+
+            const checkVolumeInterval = setInterval(() => {
+              analyserRef.current!.getByteFrequencyData(dataArray);
+              const volume = dataArray.reduce((a, b) => a + b) / dataArray.length;
+              console.log(volume);
+
+              // ここでボリュームのしきい値を設定してください
+              const VOLUME_THRESHOLD = 5; // この値は調整が必要です
+
+              if (volume > VOLUME_THRESHOLD) {
+                console.log(`自分の音声が聞こえています`);
+              } else {
+                console.log(`自分の音声が聞こえていません`);
+              }
+
+            }, 500);
+          }
+        });
+  
+      });
+    }
+  }, [token]);
+
+  const toggleVideo = () => {
+    setIsVideoEnabled(!isVideoEnabled);
+  };
+
+  const toggleAudio = () => {
+    if (isAudioEnabled) {
+      room?.localParticipant.audioTracks.forEach((trackPublication: AudioTrackPublication) => {
+        const track = trackPublication.track as LocalAudioTrack;
+        track.disable();
+      });
+    } else {
+      room?.localParticipant.audioTracks.forEach((trackPublication: AudioTrackPublication) => {
+        const track = trackPublication.track as LocalAudioTrack;
+        track.enable();
+      });
+    }
+    setIsAudioEnabled(!isAudioEnabled);
+  };
+
   return (
-    <main
-      className={`flex min-h-screen flex-col items-center justify-between p-24 ${inter.className}`}
-    >
-      <div className="z-10 max-w-5xl w-full items-center justify-between font-mono text-sm lg:flex">
-        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
-          Get started by editing&nbsp;
-          <code className="font-mono font-bold">src/pages/index.tsx</code>
-        </p>
-        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:h-auto lg:w-auto lg:bg-none">
-          <a
-            className="pointer-events-none flex place-items-center gap-2 p-8 lg:pointer-events-auto lg:p-0"
-            href="https://vercel.com?utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            By{' '}
-            <Image
-              src="/vercel.svg"
-              alt="Vercel Logo"
-              className="dark:invert"
-              width={100}
-              height={24}
-              priority
-            />
-          </a>
-        </div>
+    <div>
+      <div>Welcome to the video conference!</div>
+      <div style={{ width: '50%', float: 'left', position: 'relative' }}>
+        <div ref={localVideoRef} style={{ width: '100%', height: '250px' }}></div>
+        {!isVideoEnabled && <div style={{ width: '100%', height: '220px', backgroundColor: 'black', position: 'absolute', top: 0, left: 0 }}></div>}
       </div>
 
-      <div className="relative flex place-items-center before:absolute before:h-[300px] before:w-[480px] before:-translate-x-1/2 before:rounded-full before:bg-gradient-radial before:from-white before:to-transparent before:blur-2xl before:content-[''] after:absolute after:-z-20 after:h-[180px] after:w-[240px] after:translate-x-1/3 after:bg-gradient-conic after:from-sky-200 after:via-blue-200 after:blur-2xl after:content-[''] before:dark:bg-gradient-to-br before:dark:from-transparent before:dark:to-blue-700/10 after:dark:from-sky-900 after:dark:via-[#0141ff]/40 before:lg:h-[360px]">
-        <Image
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src="/next.svg"
-          alt="Next.js Logo"
-          width={180}
-          height={37}
-          priority
-        />
-      </div>
+      <div ref={remoteVideoRef} style={{ width: '50%', float: 'left' }}></div>
 
-      <div className="mb-32 grid text-center lg:max-w-5xl lg:w-full lg:mb-0 lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Docs{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Find in-depth information about Next.js features and API.
-          </p>
-        </a>
-
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Learn{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Learn about Next.js in an interactive course with&nbsp;quizzes!
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Templates{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Discover and deploy boilerplate example Next.js&nbsp;projects.
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/new?utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Deploy{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Instantly deploy your Next.js site to a shareable URL with Vercel.
-          </p>
-        </a>
-      </div>
-    </main>
-  )
+      <div style={{ clear: 'both' }}></div>
+      
+      <button onClick={toggleVideo}>
+        {isVideoEnabled ? 'ビデオOFF' : 'ビデオON'}
+      </button>
+      <button onClick={toggleAudio}>
+        {isAudioEnabled ? 'マイクOFF' : 'マイクON'}
+      </button>
+      <div style={{ width: `${volume}%`, height: '20px', backgroundColor: 'green' }}></div>
+    </div>
+  );
 }
